@@ -406,8 +406,7 @@
 /* =========================================================================
    Constants & default data (the user's backup, preloaded on first run)
    ========================================================================= */
-// Bump the revision whenever the preloaded defaults change, so a fresh open never
-// picks up stale data saved under an older key (old Gemini app, test runs, etc.).
+// Must stay exactly this: the installed app's saved data lives under this key.
 const STORAGE_KEY = 'dividendTracker.v2.r2';
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const MONTHS_SHORT = MONTHS.map(m => m.slice(0, 3));
@@ -415,7 +414,11 @@ const DEFAULT_YEAR = 2026; // old backups have month only; they're all 2026
 const TRAILING_MONTHS = 3; // window for "average monthly income"
 const TICKER_COLORS = ['#00e676', '#3d8bff', '#ff9f1a', '#b388ff', '#ff5c8a', '#18d4d4', '#ffd740', '#8bc34a', '#ff7043', '#90a4ae'];
 
-const DEFAULT_DATA = {"holdings":[],"dividends":[],"apiKey":"","settings":{"monthlyGoal":10000,"projection":{"years":10,"monthlyYield":null,"annualPriceChange":3,"monthlyContribution":0}}};
+// Public build: no personal data ships in this file. Empty storage starts blank.
+const DEFAULT_DATA = {
+  holdings: [], dividends: [], apiKey: '',
+  settings: { monthlyGoal: 10000, projection: { years: 10, monthlyYield: null, annualPriceChange: 3, monthlyContribution: 0 } },
+};
 
 /* =========================================================================
    State, persistence, normalisation
@@ -424,7 +427,7 @@ let state = null;
 let storageOk = true;
 
 function defaultSettings() {
-  return { monthlyGoal: 10000, projection: { years: 10, monthlyYield: null, annualPriceChange: 0, monthlyContribution: 0 } };
+  return { monthlyGoal: 10000, projection: { years: 10, monthlyYield: null, annualPriceChange: 3, monthlyContribution: 0 } };
 }
 
 /** Accepts old-format or new-format backups and returns a clean state object. */
@@ -603,11 +606,21 @@ function tickerStats(ticker) {
 
 function forwardAnnual() { return state.holdings.reduce((s, h) => s + tickerStats(h.ticker).fwdAnnual, 0); }
 
-/** Default monthly yield for the projection: trailing avg monthly income ÷ current value. */
-function defaultMonthlyYield() {
+/**
+ * Default monthly yield for the projection: FORWARD income on current shares ÷ current
+ * value. Trailing cash history includes sold positions and older share counts, so it
+ * misstates what today's portfolio yields; it's shown as a reference only. Falls back to
+ * the trailing figure when there's no forward estimate yet.
+ */
+function forwardMonthlyYield() {
+  const v = totals().value;
+  return v ? forwardAnnual() / 12 / v * 100 : 0;
+}
+function trailingMonthlyYield() {
   const v = totals().value;
   return v ? trailingAverage().avg / v * 100 : 0;
 }
+function defaultMonthlyYield() { return forwardMonthlyYield() || trailingMonthlyYield(); }
 function projSettings() {
   const p = state.settings.projection;
   return {
@@ -740,6 +753,10 @@ function monthsToIncome(target) {
 function renderHoldings() {
   $('apiKey').value = state.apiKey || '';
   const body = $('holdingsBody');
+  if (!state.holdings.length) {
+    body.innerHTML = '<tr><td colspan="10" class="empty" style="position:static;white-space:normal">No holdings yet. Import your backup or add a ticker below.</td></tr>';
+    return;
+  }
   const t = totals();
   let fwdTot = 0, dripTot = 0;
   body.innerHTML = state.holdings.map((h, i) => {
@@ -796,9 +813,10 @@ function renderProjection() {
   $('pYield').value = +p.monthlyYield.toFixed(3);
   $('pPrice').value = p.annualPriceChange;
   $('pContrib').value = p.monthlyContribution;
-  const dy = defaultMonthlyYield();
-  const fwdY = start ? forwardAnnual() / 12 / start * 100 : 0;
-  $('yieldHint').textContent = `Trailing actual: ${dy.toFixed(2)}%/mo (${(dy * 12).toFixed(1)}%/yr, ${trailingAverage().label}). Forward estimate on current shares: ${fwdY.toFixed(2)}%/mo.`;
+  const fwdY = forwardMonthlyYield(), trY = trailingMonthlyYield();
+  const custom = state.settings.projection.monthlyYield != null;
+  $('yieldHint').textContent = `Default = forward yield on current shares: ${fwdY.toFixed(2)}%/mo (${(fwdY * 12).toFixed(1)}%/yr). ` +
+    `Trailing actual cash: ${trY.toFixed(2)}%/mo (${trailingAverage().label}).` + (custom ? ' You\'ve set a custom yield; tap Reset to use the default.' : '');
 
   const r = project(start, p);
   const last = r.months;
@@ -870,46 +888,53 @@ function renderProjection() {
 }
 
 /**
- * Actual cumulative dividends this year vs. a projection line:
- *  - past months: the "pace" line assumes the projection's starting monthly income every month
- *    from your first logged month of the year;
- *  - future months: both lines continue using the DRIP model from today's value.
+ * Actual cumulative dividends this year vs. projections:
+ *  - "Projected pace" (complete months only): your trailing average monthly income every
+ *    month from your first logged payout this year, so you can see if you're ahead/behind;
+ *  - "Forecast": from the end of last month to December using the DRIP projection above
+ *    (forward yield on current shares). The current month counts whichever is larger:
+ *    what's already logged or the projected amount.
  */
 function renderActualVsProjected(p) {
   const year = CURRENT_YEAR;
   $('progress').querySelectorAll('.yearLabel').forEach(e => e.textContent = year);
   const monthly = monthlyTotals(year);
   const firstIdx = monthly.findIndex(v => v > 0);
-  const nowIdx = today.getMonth(); // current month (0-based); months before it are "complete"
-  let lastActual = -1;
-  monthly.forEach((v, i) => { if (v > 0) lastActual = i; });
-  if (lastActual < nowIdx - 1) lastActual = Math.max(lastActual, nowIdx - 1);
+  const nowIdx = today.getMonth();      // current month (0-based), still in progress
+  const lastComplete = nowIdx - 1;
+  const lastActual = Math.max(lastComplete, monthly.reduce((m, v, i) => (v > 0 ? i : m), -1));
 
   const r = project(totals().value, Object.assign({}, p, { years: 2 }));
-  const baseline = r.drip.income[0];
+  const baseline = trailingAverage().avg || r.drip.income[0];
   const actual = [], pace = [], forecast = [];
-  let cumA = 0, cumP = 0;
+  let cumA = 0, cumP = 0, cumComplete = 0;
   for (let i = 0; i < 12; i++) {
-    if (firstIdx >= 0 && i >= firstIdx && i <= lastActual) { cumA += monthly[i]; cumP += baseline; }
-    actual.push(i <= lastActual && firstIdx >= 0 && i >= firstIdx ? cumA : (i < firstIdx ? 0 : null));
-    pace.push(i <= lastActual ? (firstIdx >= 0 && i >= firstIdx ? cumP : 0) : null);
+    const started = firstIdx >= 0 && i >= firstIdx;
+    if (started && i <= lastActual) cumA += monthly[i];
+    if (started && i <= lastComplete) { cumP += baseline; cumComplete += monthly[i]; }
+    actual.push(i <= lastActual ? cumA : null);
+    pace.push(i <= lastComplete ? cumP : null);
   }
-  // Forecast from last actual month to December using projected DRIP income
-  let cumF = cumA;
+  let cumF = cumComplete;
   for (let i = 0; i < 12; i++) {
-    if (i < lastActual) forecast.push(null);
-    else if (i === lastActual) forecast.push(cumA);
-    else { cumF += r.drip.income[i - lastActual] || baseline; forecast.push(cumF); }
+    if (i < lastComplete) forecast.push(null);
+    else if (i === lastComplete) forecast.push(cumF);
+    else {
+      const projected = r.drip.income[i - lastComplete] || r.drip.income[0];
+      cumF += i === nowIdx ? Math.max(projected, monthly[i]) : projected;
+      forecast.push(cumF);
+    }
   }
   const goal = state.settings.monthlyGoal;
   const goalLine = goal && firstIdx >= 0 ? monthly.map((_, i) => i < firstIdx ? 0 : goal * (i - firstIdx + 1)) : null;
 
   $('avpActual').textContent = fmt$(cumA, 0);
-  const diff = cumP ? (cumA / cumP - 1) * 100 : 0;
-  $('avpActualSub').innerHTML = cumP ? `vs. pace ${fmt$(cumP, 0)} <span class="${diff >= 0 ? 'up' : 'down'}">(${fmtPct(diff, 1)})</span>` : '';
+  const diff = cumP ? (cumComplete / cumP - 1) * 100 : 0;
+  $('avpActualSub').innerHTML = cumP ? `thru ${MONTHS_SHORT[lastComplete]}: ${fmt$(cumComplete, 0)} vs. pace ${fmt$(cumP, 0)} <span class="${diff >= 0 ? 'up' : 'down'}">(${fmtPct(diff, 1)})</span>` : '';
   $('avpForecast').textContent = fmt$(cumF, 0);
-  $('avpNote').textContent = `"Projected pace" assumes ${fmt$(baseline, 0)}/mo (the projection's starting income) from your first ${year} payout. ` +
-    `The dashed line continues to December with the DRIP projection above${goal ? '; the purple line is your monthly goal, accumulated' : ''}.`;
+  $('avpNote').textContent = `"Projected pace" assumes your trailing average of ${fmt$(baseline, 0)}/mo for each full month since your first ${year} payout. ` +
+    `The dashed forecast runs from the end of ${lastComplete >= 0 ? MONTHS_SHORT[lastComplete] : 'last year'} to December using the DRIP projection above (forward yield on current shares)` +
+    `${goal ? '; the purple line is your monthly goal, accumulated' : ''}.`;
 
   const ds = [
     { label: 'Actual', data: actual, borderColor: '#00e676', backgroundColor: 'rgba(0,230,118,0.18)', fill: true, borderWidth: 3, pointRadius: 3, tension: 0.15 },

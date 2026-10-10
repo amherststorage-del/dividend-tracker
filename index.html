@@ -729,15 +729,19 @@ function renderOverview() {
   $('lifeDivSub').textContent = `${state.dividends.length} payouts logged` + (yearsSet.size > 1 ? `, ${yearsSet.size} yrs` : '');
 
   const goal = state.settings.monthlyGoal || 0;
-  const fwdMonthly = fwd / 12;
+  const fwdOnly = fwd / 12;
+  const thisMonth = monthlyTotals(CURRENT_YEAR)[today.getMonth()] || 0;
+  const usingMonth = thisMonth > fwdOnly;
+  const fwdMonthly = usingMonth ? thisMonth : fwdOnly;
   const pct = goal ? Math.min(100, fwdMonthly / goal * 100) : 0;
-  $('goalText').innerHTML = goal ? `${fmt$(fwdMonthly, 0)} <span class="muted small">of ${fmt$(goal, 0)} / month</span>` : 'Set a goal to track progress';
+  $('goalText').innerHTML = goal ? `${fmt$(fwdMonthly, 0)} <span class="muted small">of ${fmt$(goal, 0)} / month${usingMonth ? ' (this month, logged)' : ''}</span>` : 'Set a goal to track progress';
   $('goalFill').style.width = pct + '%';
   if (goal) {
     const remaining = goal - fwdMonthly;
     const hit = monthsToIncome(goal);
     $('goalSub').textContent = remaining <= 0 ? '🎉 Goal reached on forward income! Time to set a bigger one.'
       : `${pct.toFixed(0)}% there · ${fmt$(remaining, 0)}/mo to go` + (hit ? ` · DRIP projection hits it ~${monthLabel(hit)}` : '');
+    $('goalSub').textContent += ` · This month logged: ${fmt$(thisMonth, 0)} · Forward est: ${fmt$(fwdOnly, 0)}/mo`;
   } else $('goalSub').textContent = '';
   $('goalInput').value = goal || '';
 }

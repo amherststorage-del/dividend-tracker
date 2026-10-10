@@ -1,5 +1,5 @@
 // Minimal offline cache for Dividend Tracker. Data lives in localStorage, not here.
-const CACHE = 'dividend-tracker-205180dc23';
+const CACHE = 'dividend-tracker-c5f85b5224';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));

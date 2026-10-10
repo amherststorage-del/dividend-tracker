@@ -542,16 +542,23 @@ function monthlyTotals(year, ticker) {
 /** Month keys with payouts, oldest first, leaving out the current (still in progress)
  *  month whenever earlier months exist, so a half-logged month doesn't skew averages. */
 const NOW_KEY = CURRENT_YEAR * 12 + today.getMonth();
-function completeKeys(keys) {
+function completeKeys(keys, vals) {
   const sorted = [...keys].sort((a, b) => a - b);
-  return sorted.length > 1 && sorted[sorted.length - 1] >= NOW_KEY ? sorted.filter(k => k < NOW_KEY) : sorted;
+  if (!(sorted.length > 1 && sorted[sorted.length - 1] >= NOW_KEY)) return sorted;
+  const done = sorted.filter(k => k < NOW_KEY);
+  // Count the current month once what's logged (paid or expected) reaches last month's total.
+  if (vals && done.length) {
+    const cur = sorted.filter(k => k >= NOW_KEY).reduce((a, k) => a + (vals.get(k) || 0), 0);
+    if (cur >= (vals.get(done[done.length - 1]) || 0)) return sorted;
+  }
+  return done;
 }
 
 /** Average total cash of the last N complete months that have recorded payouts. */
 function trailingAverage() {
   const byPeriod = new Map();
   state.dividends.forEach(d => byPeriod.set(periodKey(d), (byPeriod.get(periodKey(d)) || 0) + d.totalCash));
-  const keys = completeKeys(byPeriod.keys()).slice(-TRAILING_MONTHS);
+  const keys = completeKeys(byPeriod.keys(), byPeriod).slice(-TRAILING_MONTHS);
   if (!keys.length) return { avg: 0, label: 'no payouts yet' };
   const avg = keys.reduce((s, k) => s + byPeriod.get(k), 0) / keys.length;
   const lbl = k => MONTHS_SHORT[k % 12] + (Math.floor(k / 12) !== CURRENT_YEAR ? ' ' + Math.floor(k / 12) : '');
@@ -577,7 +584,7 @@ function tickerStats(ticker) {
 
   const byMonth = new Map();
   list.forEach(d => byMonth.set(periodKey(d), (byMonth.get(periodKey(d)) || 0) + d.divPerShare));
-  const months = completeKeys(byMonth.keys());
+  const months = completeKeys(byMonth.keys(), byMonth);
   const monthSums = months.map(k => byMonth.get(k));
   const recent = monthSums.slice(-3);
   const fwdPerShareMonthly = recent.reduce((a, b) => a + b, 0) / recent.length;

@@ -650,16 +650,29 @@ function project(startValue, p) {
   const drip = { value: [startValue], income: [startValue * y], cum: [0] };
   const cash = { value: [startValue], income: [startValue * y], cum: [0] };
   for (let m = 1; m <= months; m++) {
-    const dv = drip.value[m - 1], cv = cash.value[m - 1];
+    // New money goes in at the start of the month, so it earns that month's dividend.
+    const dv = drip.value[m - 1] + p.monthlyContribution, cv = cash.value[m - 1] + p.monthlyContribution;
     const dInc = dv * y, cInc = cv * y;
-    drip.value.push(Math.max(0, dv * (1 + g) + dInc + p.monthlyContribution));
-    cash.value.push(Math.max(0, cv * (1 + g) + p.monthlyContribution));
+    drip.value.push(Math.max(0, dv * (1 + g) + dInc));
+    cash.value.push(Math.max(0, cv * (1 + g)));
     drip.income.push(dInc); cash.income.push(cInc);
     drip.cum.push(drip.cum[m - 1] + dInc); cash.cum.push(cash.cum[m - 1] + cInc);
   }
   return { months, drip, cash };
 }
 
+/** Fractional month when a series first reaches target (linear between months), or null. */
+function fracMonth(arr, target) {
+  const i = arr.findIndex(v => v >= target);
+  if (i < 0) return null; if (i === 0) return 0;
+  const a = arr[i - 1], b = arr[i];
+  return i - 1 + (b > a ? (target - a) / (b - a) : 1);
+}
+function whenLabel(f) {
+  const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() + Math.round(f * 30.44));
+  const mo = f < 24 ? `${f.toFixed(1)} months` : `${(f / 12).toFixed(1)} yrs`;
+  return `in <b>${mo}</b> <span class="muted">(~${MONTHS_SHORT[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()})</span>`;
+}
 function monthLabel(offset) {
   const d = new Date(today.getFullYear(), today.getMonth() + offset, 1);
   return MONTHS_SHORT[d.getMonth()] + ' ' + d.getFullYear();
@@ -820,10 +833,10 @@ function renderChanges() {
 function renderProjection() {
   const p = projSettings();
   const start = totals().value;
-  $('pYears').value = p.years;
-  $('pYield').value = +p.monthlyYield.toFixed(3);
-  $('pPrice').value = p.annualPriceChange;
-  $('pContrib').value = p.monthlyContribution;
+  if (document.activeElement !== $('pYears')) $('pYears').value = p.years;
+  if (document.activeElement !== $('pYield')) $('pYield').value = +p.monthlyYield.toFixed(3);
+  if (document.activeElement !== $('pPrice')) $('pPrice').value = p.annualPriceChange;
+  if (document.activeElement !== $('pContrib')) $('pContrib').value = p.monthlyContribution;
   const fwdY = forwardMonthlyYield(), trY = trailingMonthlyYield();
   const custom = state.settings.projection.monthlyYield != null;
   $('yieldHint').textContent = `Default = forward yield on current shares: ${fwdY.toFixed(2)}%/mo (${(fwdY * 12).toFixed(1)}%/yr). ` +
@@ -845,24 +858,40 @@ function renderProjection() {
   let shownIncome = 0;
   incomeTargets.forEach(target => {
     if (shownIncome >= 3) return;
-    const i = r.drip.income.findIndex(v => v >= target);
-    if (i > 0) { items.push({ m: i, cls: '', html: `💵 Monthly income reaches <b>${fmt$(target, 0)}</b> in month ${i} <span class="muted">(${monthLabel(i)})</span>` }); shownIncome++; }
+    const i = fracMonth(r.drip.income, target);
+    if (i > 0) { items.push({ m: i, cls: '', html: `💵 Monthly income reaches <b>${fmt$(target, 0)}</b> ${whenLabel(i)}` }); shownIncome++; }
   });
   if (goal && goal > startInc) {
-    const i = r.drip.income.findIndex(v => v >= goal);
-    if (i > 0 && !incomeTargets.slice(0, 3).includes(goal)) items.push({ m: i, cls: 'purple', html: `🎯 Your <b>${fmt$(goal, 0)}/mo goal</b> is reached in month ${i} <span class="muted">(${monthLabel(i)})</span>` });
+    const i = fracMonth(r.drip.income, goal);
+    if (i > 0 && !incomeTargets.slice(0, 3).includes(goal)) items.push({ m: i, cls: 'purple', html: `🎯 Your <b>${fmt$(goal, 0)}/mo goal</b> is reached ${whenLabel(i)}` });
   }
-  const dbl = r.drip.income.findIndex(v => v >= startInc * 2);
-  if (startInc > 0 && dbl > 0) items.push({ m: dbl, cls: 'blue', html: `📈 Income <b>doubles</b> to ${fmt$(startInc * 2, 0)}/mo in month ${dbl} <span class="muted">(${monthLabel(dbl)})</span>` });
+  const dbl = fracMonth(r.drip.income, startInc * 2);
+  if (startInc > 0 && dbl > 0) items.push({ m: dbl, cls: 'blue', html: `📈 Income <b>doubles</b> to ${fmt$(startInc * 2, 0)}/mo ${whenLabel(dbl)}` });
   [1e6, 2e6, 5e6, 1e7].forEach(target => {
     if (start >= target) return;
-    const i = r.drip.value.findIndex(v => v >= target);
-    if (i > 0) items.push({ m: i, cls: 'orange', html: `🏆 Portfolio hits <b>${fmtShort$(target)}</b> in month ${i} <span class="muted">(${monthLabel(i)}, ${(i / 12).toFixed(1)} yrs)</span>` });
+    const i = fracMonth(r.drip.value, target);
+    if (i > 0) items.push({ m: i, cls: 'orange', html: `🏆 Portfolio hits <b>${fmtShort$(target)}</b> ${whenLabel(i)}` });
   });
   items.sort((a, b) => a.m - b.m);
   const extra = r.drip.cum[last] - r.cash.cum[last];
   const gap = r.drip.income[last] - r.cash.income[last];
   let html = items.slice(0, 6).map(it => `<div class="callout ${it.cls}">${it.html}</div>`).join('');
+  if (p.monthlyContribution > 0) {
+    const r0 = project(start, Object.assign({}, p, { monthlyContribution: 0, years: 40 }));
+    const r1 = project(start, Object.assign({}, p, { years: 40 }));
+    const parts = [];
+    if (goal && goal > startInc) {
+      const a = fracMonth(r0.drip.income, goal), b = fracMonth(r1.drip.income, goal);
+      if (a != null && b != null && a - b > 0.05) parts.push(`your ${fmt$(goal, 0)}/mo goal <b>${(a - b).toFixed(1)} months sooner</b>`);
+    }
+    if (start < 1e6) {
+      const a = fracMonth(r0.drip.value, 1e6), b = fracMonth(r1.drip.value, 1e6);
+      if (a != null && b != null && a - b > 0.05) parts.push(`$1M <b>${(a - b) >= 24 ? ((a - b) / 12).toFixed(1) + ' years' : (a - b).toFixed(1) + ' months'} sooner</b>`);
+    }
+    const inc0 = r0.drip.income[p.years * 12], inc1 = r1.drip.income[p.years * 12];
+    parts.push(`<b>${fmt$(inc1 - inc0, 0)}/mo more</b> income after ${p.years} years`);
+    html = `<div class="callout purple">💪 Adding ${fmt$(p.monthlyContribution, 0)}/mo gets you ${parts.join(', ')} vs adding nothing.</div>` + html;
+  }
   if (gap > 0) html += `<div class="callout">♻️ After ${p.years} years, reinvesting pays <b>${fmt$(gap, 0)}/mo more</b> than taking cash, and earns <b>${fmtShort$(extra)}</b> more in total dividends.</div>`;
   if (!items.length && gap <= 0) html = '<div class="callout orange">With these inputs the portfolio does not grow. Try a higher yield, a smaller price decline, or a monthly contribution.</div>';
   $('milestones').innerHTML = html;
@@ -1172,12 +1201,12 @@ function bindEvents() {
 
   // Projection inputs
   const projMap = { pYears: 'years', pYield: 'monthlyYield', pPrice: 'annualPriceChange', pContrib: 'monthlyContribution' };
-  Object.keys(projMap).forEach(id => $(id).addEventListener('change', () => {
+  Object.keys(projMap).forEach(id => ['input', 'change'].forEach(ev => $(id).addEventListener(ev, () => {
     const v = $(id).value;
     if (v === '' && id === 'pYield') state.settings.projection.monthlyYield = null;
     else state.settings.projection[projMap[id]] = num(v);
     save(); renderProjection(); renderOverview();
-  }));
+  })));
   $('resetProj').addEventListener('click', () => { state.settings.projection = defaultSettings().projection; save(); renderProjection(); renderOverview(); });
 
   $('yearSelect').addEventListener('change', e => { chartYear = parseInt(e.target.value, 10); renderIncomeCharts(); });
